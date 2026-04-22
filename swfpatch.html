@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<body>
+<input type="file" id="file"><br><br>
+
+<label>Find:</label>
+<input type="text" id="find" placeholder="youtube.com"><br><br>
+
+<label>Replace with:</label>
+<input type="text" id="replace" placeholder="yourdomain.com"><br><br>
+
+<button id="run">Decompress + Patch</button>
+
+<script src="https://cdn.jsdelivr.net/npm/pako@2/dist/pako.min.js"></script>
+<script>
+let selectedFile = null;
+
+document.getElementById("file").onchange = (e) => {
+  selectedFile = e.target.files[0];
+};
+
+function patchBytes(data, findStr, replaceStr) {
+  const encoder = new TextEncoder();
+  const find = encoder.encode(findStr);
+  const replace = encoder.encode(replaceStr);
+
+  let count = 0;
+
+  for (let i = 0; i <= data.length - find.length; i++) {
+    let match = true;
+
+    for (let j = 0; j < find.length; j++) {
+      if (data[i + j] !== find[j]) {
+        match = false;
+        break;
+      }
+    }
+
+    if (match) {
+      for (let j = 0; j < find.length; j++) {
+        data[i + j] = replace[j] !== undefined ? replace[j] : 0x00;
+      }
+      count++;
+    }
+  }
+
+  return count;
+}
+
+async function decompressAndPatch(file, findStr, replaceStr) {
+  const buf = new Uint8Array(await file.arrayBuffer());
+
+  if (buf[0] !== 0x43) {
+    throw new Error("Not a CWS file");
+  }
+
+  const compressed = buf.slice(8);
+  const decompressed = pako.inflate(compressed);
+
+  // PATCH happens here
+  const matches = patchBytes(decompressed, findStr, replaceStr);
+
+  const out = new Uint8Array(8 + decompressed.length);
+
+  // Header
+  out[0] = 0x46;
+  out[1] = 0x57;
+  out[2] = 0x53;
+  out[3] = buf[3];
+
+  const totalLength = out.length;
+  out[4] = totalLength & 0xFF;
+  out[5] = (totalLength >> 8) & 0xFF;
+  out[6] = (totalLength >> 16) & 0xFF;
+  out[7] = (totalLength >> 24) & 0xFF;
+
+  out.set(decompressed, 8);
+
+  return { blob: new Blob([out], { type: "application/x-shockwave-flash" }), matches };
+}
+
+document.getElementById("run").onclick = async () => {
+  if (!selectedFile) {
+    alert("Select a SWF first");
+    return;
+  }
+
+  const findStr = document.getElementById("find").value;
+  const replaceStr = document.getElementById("replace").value;
+
+  if (!findStr) {
+    alert("Enter a string to find");
+    return;
+  }
+
+  try {
+    const { blob, matches } = await decompressAndPatch(selectedFile, findStr, replaceStr);
+
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "patched.swf";
+    a.click();
+
+    alert("Patched " + matches + " occurrence(s)");
+  } catch (e) {
+    console.error(e);
+    alert("Failed: " + e.message);
+  }
+};
+</script>
+</body>
+</html>
