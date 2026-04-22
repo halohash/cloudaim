@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html>
+<body>
+<input type="file" id="file"><br><br>
+
+<label>Find:</label>
+<input type="text" id="find" placeholder="youtube.com"><br><br>
+
+<label>Replace:</label>
+<input type="text" id="replace" placeholder="your-long-domain.com"><br><br>
+
+<label>Output:</label>
+<select id="mode">
+  <option value="FWS">Uncompressed (FWS)</option>
+  <option value="CWS">Compressed (CWS)</option>
+</select><br><br>
+
+<button id="run">Patch</button>
+
+<script src="https://cdn.jsdelivr.net/npm/pako@2/dist/pako.min.js"></script>
+<script>
+let selectedFile = null;
+
+document.getElementById("file").onchange = (e) => {
+  selectedFile = e.target.files[0];
+};
+
+function findAll(data, pattern) {
+  const positions = [];
+  for (let i = 0; i <= data.length - pattern.length; i++) {
+    let match = true;
+    for (let j = 0; j < pattern.length; j++) {
+      if (data[i + j] !== pattern[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) positions.push(i);
+  }
+  return positions;
+}
+
+function expandAndPatch(data, findStr, replaceStr) {
+  const enc = new TextEncoder();
+  const find = enc.encode(findStr);
+  const replace = enc.encode(replaceStr);
+
+  const positions = findAll(data, find);
+  if (positions.length === 0) return { data, count: 0 };
+
+  const diff = replace.length - find.length;
+  const newLength = data.length + diff * positions.length;
+
+  const out = new Uint8Array(newLength);
+
+  let src = 0;
+  let dst = 0;
+  let pIndex = 0;
+
+  for (let i = 0; i < data.length; i++) {
+    if (pIndex < positions.length && i === positions[pIndex]) {
+      // write replacement
+      out.set(replace, dst);
+      dst += replace.length;
+      i += find.length - 1;
+      src = i + 1;
+      pIndex++;
+    } else {
+      out[dst++] = data[i];
+    }
+  }
+
+  return { data: out, count: positions.length };
+}
+
+async function processSWF(file, findStr, replaceStr, outputMode) {
+  const buf = new Uint8Array(await file.arrayBuffer());
+
+  const sig = String.fromCharCode(buf[0], buf[1], buf[2]);
+  const version = buf[3];
+
+  let body;
+
+  if (sig === "CWS") {
+    body = pako.inflate(buf.slice(8));
+  } else if (sig === "FWS") {
+    body = buf.slice(8);
+  } else {
+    throw new Error("Unsupported SWF format");
+  }
+
+  // EXPAND + PATCH
+  const result = expandAndPatch(body, findStr, replaceStr);
+  const patchedBody = result.data;
+
+  let finalBody;
+  let signature;
+
+  if (outputMode === "CWS") {
+    finalBody = pako.deflate(patchedBody);
+    signature = [0x43, 0x57, 0x53]; // CWS
+  } else {
+    finalBody = patchedBody;
+    signature = [0x46, 0x57, 0x53]; // FWS
+  }
+
+  const totalLength = 8 + patchedBody.length;
+
+  const out = new Uint8Array(8 + finalBody.length);
+
+  // header
+  out[0] = signature[0];
+  out[1] = signature[1];
+  out[2] = signature[2];
+  out[3] = version;
+
+  // correct uncompressed length
+  out[4] = totalLength & 0xFF;
+  out[5] = (totalLength >> 8) & 0xFF;
+  out[6] = (totalLength >> 16) & 0xFF;
+  out[7] = (totalLength >> 24) & 0xFF;
+
+  // body
+  out.set(finalBody, 8);
+
+  return {
+    blob: new Blob([out], { type: "application/x-shockwave-flash" }),
+    count: result.count
+  };
+}
+
+document.getElementById("run").onclick = async () => {
+  if (!selectedFile) {
+    alert("Select a SWF first");
+    return;
+  }
+
+  const findStr = document.getElementById("find").value;
+  const replaceStr = document.getElementById("replace").value;
+  const mode = document.getElementById("mode").value;
+
+  if (!findStr) {
+    alert("Enter a string to find");
+    return;
+  }
+
+  try {
+    const { blob, count } = await processSWF(selectedFile, findStr, replaceStr, mode);
+
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "patched.swf";
+    a.click();
+
+    alert("Patched " + count + " occurrence(s)");
+  } catch (e) {
+    console.error(e);
+    alert("Failed: " + e.message);
+  }
+};
+</script>
+</body>
+</html>
